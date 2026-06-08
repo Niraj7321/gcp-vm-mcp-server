@@ -74,3 +74,52 @@ def test_get_instance_not_found(server):
     srv, client = server
     client.get.side_effect = NotFound("nope")
     assert "not found" in srv.get_instance("ghost", "us-central1-a")
+
+
+def _vm_with_metadata(items):
+    return SimpleNamespace(
+        metadata=SimpleNamespace(fingerprint="fp", items=items)
+    )
+
+
+def test_list_ssh_keys_none(server):
+    srv, client = server
+    client.get.return_value = _vm_with_metadata([])
+    assert "No SSH keys" in srv.list_ssh_keys("web-1", "us-central1-a")
+
+
+def test_add_ssh_key_new(server, monkeypatch):
+    srv, client = server
+    client.get.return_value = _vm_with_metadata([])
+    # set_metadata returns an operation whose .result() we stub via _wait
+    monkeypatch.setattr(srv, "_wait", lambda *a, **k: "DONE")
+    out = srv.add_ssh_key("web-1", "us-central1-a", "niraj", "ssh-ed25519 AAA test")
+    assert "Added SSH key" in out
+    assert client.set_metadata.called
+
+
+def test_add_ssh_key_duplicate(server):
+    srv, client = server
+    existing = SimpleNamespace(key="ssh-keys", value="niraj:ssh-ed25519 AAA test")
+    client.get.return_value = _vm_with_metadata([existing])
+    out = srv.add_ssh_key("web-1", "us-central1-a", "niraj", "ssh-ed25519 AAA test")
+    assert "already present" in out
+    assert not client.set_metadata.called
+
+
+def test_create_firewall_rule(server, monkeypatch):
+    srv, _ = server
+    fw_client = mock.MagicMock()
+    monkeypatch.setattr(srv, "_get_firewall_client", lambda: fw_client)
+    monkeypatch.setattr(srv, "_wait", lambda *a, **k: "DONE")
+    out = srv.create_firewall_rule("web-fw", ["80", "443"])
+    assert "web-fw" in out
+    assert fw_client.insert.called
+
+
+def test_list_firewall_rules_empty(server, monkeypatch):
+    srv, _ = server
+    fw_client = mock.MagicMock()
+    fw_client.list.return_value = []
+    monkeypatch.setattr(srv, "_get_firewall_client", lambda: fw_client)
+    assert "No firewall rules" in srv.list_firewall_rules()

@@ -17,6 +17,11 @@ from the environment — nothing is hardcoded.
 | `start_instance` | Start a stopped instance |
 | `stop_instance` | Stop a running instance |
 | `delete_instance` | Permanently delete an instance |
+| `list_ssh_keys` | List SSH keys set in an instance's metadata |
+| `add_ssh_key` | Add an SSH public key for a user to an instance |
+| `list_firewall_rules` | List all firewall rules in the project |
+| `create_firewall_rule` | Create a TCP-allow firewall rule for given ports |
+| `delete_firewall_rule` | Delete a firewall rule by name |
 
 ## Setup
 

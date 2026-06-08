@@ -48,6 +48,16 @@ def _get_client() -> compute_v1.InstancesClient:
     return _client
 
 
+_firewall_client: compute_v1.FirewallsClient | None = None
+
+
+def _get_firewall_client() -> compute_v1.FirewallsClient:
+    global _firewall_client
+    if _firewall_client is None:
+        _firewall_client = compute_v1.FirewallsClient()
+    return _firewall_client
+
+
 def _wait(operation, project: str, zone: str | None = None) -> str:
     """Block until a Compute Engine operation finishes, returning its status."""
     try:
@@ -157,6 +167,124 @@ def delete_instance(name: str, zone: str) -> str:
         return f"Error deleting instance: {exc}"
     status = _wait(op, project, zone)
     return f"Delete requested for '{name}' in '{zone}' (operation {status})."
+
+
+@mcp.tool()
+def list_ssh_keys(name: str, zone: str) -> str:
+    """List the SSH keys currently set in an instance's metadata."""
+    project = _require_project()
+    try:
+        vm = _get_client().get(project=project, zone=zone, instance=name)
+    except NotFound:
+        return f"Instance '{name}' not found in zone '{zone}'."
+    except GoogleAPICallError as exc:
+        return f"Error fetching instance: {exc}"
+
+    for item in vm.metadata.items:
+        if item.key == "ssh-keys" and item.value:
+            return f"SSH keys on '{name}':\n{item.value}"
+    return f"No SSH keys set on '{name}'."
+
+
+@mcp.tool()
+def add_ssh_key(name: str, zone: str, username: str, public_key: str) -> str:
+    """Add an SSH public key for a user to an instance.
+
+    `public_key` is the full key line (e.g. 'ssh-ed25519 AAAA... comment').
+    Existing keys are preserved; duplicates are ignored.
+    """
+    project = _require_project()
+    client = _get_client()
+    try:
+        vm = client.get(project=project, zone=zone, instance=name)
+    except NotFound:
+        return f"Instance '{name}' not found in zone '{zone}'."
+    except GoogleAPICallError as exc:
+        return f"Error fetching instance: {exc}"
+
+    entry = f"{username}:{public_key}"
+    items = list(vm.metadata.items)
+    ssh_item = next((i for i in items if i.key == "ssh-keys"), None)
+
+    if ssh_item is None:
+        items.append(compute_v1.Items(key="ssh-keys", value=entry))
+    else:
+        existing = ssh_item.value.split("\n") if ssh_item.value else []
+        if entry in existing:
+            return f"Key for '{username}' is already present on '{name}'."
+        ssh_item.value = "\n".join([*existing, entry]) if ssh_item.value else entry
+
+    metadata = compute_v1.Metadata(fingerprint=vm.metadata.fingerprint, items=items)
+    try:
+        op = client.set_metadata(
+            project=project, zone=zone, instance=name, metadata_resource=metadata
+        )
+    except GoogleAPICallError as exc:
+        return f"Error setting metadata: {exc}"
+    status = _wait(op, project, zone)
+    return f"Added SSH key for '{username}' to '{name}' (operation {status})."
+
+
+@mcp.tool()
+def list_firewall_rules() -> str:
+    """List all firewall rules in the project."""
+    project = _require_project()
+    rows: list[str] = []
+    try:
+        for fw in _get_firewall_client().list(project=project):
+            allowed = ",".join(
+                f"{a.I_p_protocol}:{'/'.join(a.ports) if a.ports else 'all'}"
+                for a in fw.allowed
+            )
+            sources = ",".join(fw.source_ranges) or "none"
+            rows.append(f"{fw.name}\tallow={allowed}\tfrom={sources}")
+    except GoogleAPICallError as exc:
+        return f"Error listing firewall rules: {exc}"
+
+    if not rows:
+        return "No firewall rules found."
+    return f"{len(rows)} firewall rule(s):\n" + "\n".join(rows)
+
+
+@mcp.tool()
+def create_firewall_rule(
+    name: str, ports: list[str], source_range: str = "0.0.0.0/0"
+) -> str:
+    """Create a TCP-allow firewall rule for the given ports.
+
+    `source_range` defaults to 0.0.0.0/0 (open to the internet) — narrow it for
+    anything other than public services. The rule is tagged with `name` so it
+    applies to instances carrying that network tag.
+    """
+    project = _require_project()
+    firewall = compute_v1.Firewall(
+        name=name,
+        allowed=[compute_v1.Allowed(I_p_protocol="tcp", ports=ports)],
+        source_ranges=[source_range],
+        target_tags=[name],
+    )
+    try:
+        op = _get_firewall_client().insert(
+            project=project, firewall_resource=firewall
+        )
+    except GoogleAPICallError as exc:
+        return f"Error creating firewall rule: {exc}"
+    status = _wait(op, project)
+    return f"Firewall rule '{name}' for ports {', '.join(ports)} (operation {status})."
+
+
+@mcp.tool()
+def delete_firewall_rule(name: str) -> str:
+    """Delete a firewall rule by name."""
+    project = _require_project()
+    try:
+        op = _get_firewall_client().delete(project=project, firewall=name)
+    except NotFound:
+        return f"Firewall rule '{name}' not found."
+    except GoogleAPICallError as exc:
+        return f"Error deleting firewall rule: {exc}"
+    status = _wait(op, project)
+    return f"Delete requested for firewall rule '{name}' (operation {status})."
 
 
 if __name__ == "__main__":
