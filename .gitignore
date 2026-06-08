@@ -1,0 +1,12 @@
+# Credentials — never commit these
+service-account.json
+*-key.json
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
